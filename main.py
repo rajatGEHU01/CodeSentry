@@ -9,6 +9,7 @@ from codesentry.parsers.tokenizer import tokenize
 from codesentry.analyzers.duplicate import DuplicateDetector
 from codesentry.analyzers.cyclomatic import CyclomaticAnalyzer
 from codesentry.analyzers.halstead import HalsteadAnalyzer
+from codesentry.analyzers.secrets import SecretDetector
 
 
 def main():
@@ -19,13 +20,14 @@ def main():
     }
 
     duplicate_detector = DuplicateDetector(min_tokens=20)
-
     cyclomatic = CyclomaticAnalyzer(threshold=10)
-
     halstead = HalsteadAnalyzer(volume_threshold=1000)
+    secret_detector = SecretDetector()
 
     repository_tokens = {}
     all_findings = []
+
+    scanned_files = 0
 
     for path in sorted(Path("samples").rglob("*")):
 
@@ -35,14 +37,38 @@ def main():
         file_path = path.as_posix()
         language = detect_language(file_path)
 
+        try:
+            source = path.read_text(encoding="utf-8")
+
+        except (UnicodeDecodeError, OSError):
+            continue
+
+        scanned_files += 1
+
+        # Security scanning is language independent
+        security_findings = secret_detector.analyze(
+            source,
+            file_path
+        )
+
+        all_findings.extend(security_findings)
+
+        print(f"\n{'=' * 50}")
+        print(f"FILE: {file_path}")
+        print(f"{'=' * 50}")
+
+        print(
+            f"Security findings: {len(security_findings)}"
+        )
+
         if language not in parsers:
             continue
 
-        source = path.read_text(encoding="utf-8")
         tree = parsers[language].parse(source)
 
         if tree.root_node.has_error:
-            print(f"Skipping invalid syntax: {file_path}")
+
+            print("Syntax errors detected.")
             continue
 
         tokens = tokenize(tree.root_node, source)
@@ -69,10 +95,6 @@ def main():
         all_findings.extend(complexity_findings)
         all_findings.extend(halstead_findings)
 
-        print(f"\n{'=' * 50}")
-        print(f"FILE: {file_path}")
-        print(f"{'=' * 50}")
-
         print("\nCYCLOMATIC COMPLEXITY")
 
         for function in complexity_metrics:
@@ -95,7 +117,8 @@ def main():
 
     print("\n========== REPOSITORY SUMMARY ==========")
 
-    print(f"Files analyzed: {len(repository_tokens)}")
+    print(f"Files scanned: {scanned_files}")
+    print(f"Files parsed: {len(repository_tokens)}")
     print(f"Total tokens: {duplication.total_tokens}")
     print(f"Duplicated tokens: {duplication.duplicated_tokens}")
     print(f"Duplication: {duplication.duplication_percentage}%")
@@ -115,9 +138,25 @@ def main():
 
         print(f"Matching tokens: {block.token_count}")
 
-    print("\n========== QUALITY FINDINGS ==========")
+    print("\n========== ANALYSIS FINDINGS ==========")
 
-    print(f"Complexity findings: {len(all_findings)}")
+    print(f"Total findings: {len(all_findings)}")
+
+    severity_order = {
+        "critical": 0,
+        "high": 1,
+        "medium": 2,
+        "low": 3,
+        "info": 4
+    }
+
+    all_findings.sort(
+        key=lambda finding: (
+            severity_order[finding.severity.value],
+            finding.file_path,
+            finding.start_line
+        )
+    )
 
     for finding in all_findings:
 
