@@ -1,9 +1,9 @@
 import pytest
 
 from codesentry.core.models import (
-    AnalysisResult,
     Finding,
     Severity,
+    AnalysisResult,
     DuplicationResult
 )
 
@@ -19,23 +19,28 @@ from codesentry.core.quality_gate import (
 )
 
 
-def make_report(severity):
+def create_finding(severity=Severity.HIGH):
 
-    finding = Finding(
+    return Finding(
         rule_id="TEST001",
-        message="Test finding",
+        message="Test issue detected",
         severity=severity,
-        file_path="test.py",
+        file_path="sample.py",
         start_line=1,
-        end_line=1
+        end_line=1,
+        suggestion="Fix the detected issue"
     )
+
+
+def create_report(findings=None, metrics=None):
 
     return RepositoryReport(
         files=[
             AnalysisResult(
-                file_path="test.py",
+                file_path="sample.py",
                 language="python",
-                findings=[finding]
+                findings=findings or [],
+                metrics=metrics or {}
             )
         ]
     )
@@ -43,47 +48,65 @@ def make_report(severity):
 
 def test_clean_repository():
 
-    result = QualityGate().evaluate(
-        RepositoryReport()
-    )
+    report = RepositoryReport()
+
+    result = QualityGate().evaluate(report)
 
     assert result.status == GateStatus.PASSED
     assert result.passed
     assert result.exit_code == 0
+    assert len(result.violations) == 0
 
 
 @pytest.mark.parametrize(
     "severity",
-    [Severity.CRITICAL, Severity.HIGH]
+    [
+        Severity.CRITICAL,
+        Severity.HIGH
+    ]
 )
 def test_security_failure(severity):
 
-    result = QualityGate().evaluate(
-        make_report(severity)
+    report = create_report(
+        findings=[create_finding(severity)]
     )
 
+    result = QualityGate().evaluate(report)
+
     assert result.status == GateStatus.FAILED
+    assert not result.passed
     assert result.exit_code == 1
+    assert len(result.violations) > 0
 
 
 def test_medium_allowed():
 
-    result = QualityGate().evaluate(
-        make_report(Severity.MEDIUM)
+    report = create_report(
+        findings=[
+            create_finding(Severity.MEDIUM)
+        ]
     )
 
-    assert result.passed
+    result = QualityGate().evaluate(report)
+
+    assert result.status == GateStatus.PASSED
 
 
 def test_custom_threshold():
 
-    config = QualityGateConfig(max_medium=0)
-
-    result = QualityGate(config).evaluate(
-        make_report(Severity.MEDIUM)
+    config = QualityGateConfig(
+        max_high=1
     )
 
-    assert not result.passed
+    report = create_report(
+        findings=[
+            create_finding(Severity.HIGH)
+        ]
+    )
+
+    result = QualityGate(config).evaluate(report)
+
+    assert result.status == GateStatus.PASSED
 
 
 def test_duplication_failure():
@@ -100,9 +123,18 @@ def test_duplication_failure():
     assert result.status == GateStatus.FAILED
 
     assert any(
-        violation.metric == "duplication_percentage"
+        violation.metric == "duplication"
         for violation in result.violations
     )
+
+    violation = next(
+        violation
+        for violation in result.violations
+        if violation.metric == "duplication"
+    )
+
+    assert violation.actual == 30.0
+    assert violation.allowed == 5.0
 
 
 def test_duplication_boundary():
@@ -110,37 +142,42 @@ def test_duplication_boundary():
     report = RepositoryReport(
         duplication=DuplicationResult(
             total_tokens=100,
-            duplicated_tokens=15
+            duplicated_tokens=5
         )
-    )
-
-    assert QualityGate().evaluate(report).passed
-
-
-def test_complexity_failure():
-
-    report = RepositoryReport(
-        files=[
-            AnalysisResult(
-                file_path="test.py",
-                language="python",
-                metrics={
-                    "cyclomatic": [
-                        {
-                            "name": "calculate",
-                            "start_line": 1,
-                            "end_line": 30,
-                            "complexity": 20
-                        }
-                    ]
-                }
-            )
-        ]
     )
 
     result = QualityGate().evaluate(report)
 
-    assert not result.passed
+    assert result.status == GateStatus.PASSED
+    assert result.passed
+
+    # Verify that exceeding the boundary fails.
+
+    report.duplication.duplicated_tokens = 6
+
+    result = QualityGate().evaluate(report)
+
+    assert result.status == GateStatus.FAILED
+
+
+def test_complexity_failure():
+
+    report = create_report(
+        metrics={
+            "cyclomatic": [
+                {
+                    "name": "complex_function",
+                    "start_line": 1,
+                    "end_line": 25,
+                    "complexity": 20
+                }
+            ]
+        }
+    )
+
+    result = QualityGate().evaluate(report)
+
+    assert result.status == GateStatus.FAILED
 
     assert any(
         violation.metric == "cyclomatic_complexity"
@@ -153,9 +190,9 @@ def test_analysis_error():
     report = RepositoryReport(
         errors=[
             AnalysisError(
-                file_path="test.py",
-                stage="parser",
-                message="Invalid syntax"
+                file_path="sample.py",
+                stage="parsing",
+                message="Parsing failed"
             )
         ]
     )
@@ -163,6 +200,7 @@ def test_analysis_error():
     result = QualityGate().evaluate(report)
 
     assert result.status == GateStatus.ERROR
+    assert not result.passed
     assert result.exit_code == 2
 
 
@@ -170,30 +208,51 @@ def test_skipped_file():
 
     report = RepositoryReport(
         skipped_files={
-            "large.py": "File exceeds size limit"
+            "large_file.cpp": "File size limit exceeded"
         }
     )
 
     result = QualityGate().evaluate(report)
 
     assert result.status == GateStatus.ERROR
+    assert not result.passed
 
 
 def test_invalid_configuration():
 
     with pytest.raises(ValueError):
 
-        QualityGateConfig(max_duplication=120)
+        QualityGateConfig(
+            max_critical=-1
+        )
+
+    with pytest.raises(ValueError):
+
+        QualityGateConfig(
+            max_duplication=101.0
+        )
 
 
 def test_serialization():
 
-    result = QualityGate().evaluate(
-        make_report(Severity.HIGH)
+    report = create_report(
+        findings=[
+            create_finding(Severity.CRITICAL)
+        ]
     )
+
+    result = QualityGate().evaluate(report)
 
     data = result.to_dict()
 
     assert data["status"] == "failed"
     assert data["passed"] is False
-    assert len(data["violations"]) == 1
+    assert isinstance(data["violations"], list)
+    assert len(data["violations"]) > 0
+
+    violation = data["violations"][0]
+
+    assert "metric" in violation
+    assert "actual" in violation
+    assert "allowed" in violation
+    assert "message" in violation

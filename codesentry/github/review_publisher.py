@@ -1,3 +1,4 @@
+from codesentry.github.report_format import issue_title, render_summary, safe
 import hashlib
 import json
 import logging
@@ -93,37 +94,13 @@ class ReviewPublisher:
         )
 
     def build_comment(self, finding) -> str:
-
         severity = finding.severity.value
-
-        icon = self.SEVERITY_ICONS.get(
-            severity,
-            "⚪"
-        )
-
-        body = [
-            f"{icon} **{severity.upper()} — "
-            f"{self.safe_text(finding.rule_id)}**",
-
-            "",
-
-            self.safe_text(finding.message)
-        ]
-
+        icon = self.SEVERITY_ICONS.get(severity, "⚪")
+        body = [f"{icon} **{safe(issue_title(finding))}** — {severity.upper()}",
+                "", "**Problem**", safe(finding.message, 1500)]
         if finding.suggestion:
-
-            body.extend([
-                "",
-                "**Recommended fix:**",
-                self.safe_text(finding.suggestion)
-            ])
-
-        body.extend([
-            "",
-            "---",
-            "*Detected by CodeSentry Static Analysis Engine*"
-        ])
-
+            body += ["", "**How to fix**", safe(finding.suggestion, 1500)]
+        body += ["", f"Rule: `{safe(finding.rule_id)}` · CodeSentry"]
         return "\n".join(body)
 
     def build_comments(
@@ -194,124 +171,9 @@ class ReviewPublisher:
 
         return comments
 
-    def build_summary(
-        self,
-        analysis: PullRequestAnalysis,
-        comment_count: int
-    ) -> str:
-
-        report = analysis.report
-
-        status = analysis.gate.status.value
-
-        status_icons = {
-            "passed": "✅",
-            "failed": "❌",
-            "error": "⚠️"
-        }
-
-        icon = status_icons.get(status, "⚠️")
-
-        counts = report.severity_counts
-
-        lines = [
-            "## CodeSentry Analysis Report",
-            "",
-            f"### {icon} Quality Gate: {status.upper()}",
-            "",
-            "| Metric | Result |",
-            "|---|---:|",
-
-            f"| Changed files | {analysis.changed_files} |",
-            f"| Analyzed files | {analysis.analyzed_files} |",
-            f"| Total findings | {len(analysis.findings)} |",
-
-            f"| Critical | {counts.get('critical', 0)} |",
-            f"| High | {counts.get('high', 0)} |",
-            f"| Medium | {counts.get('medium', 0)} |",
-            f"| Low | {counts.get('low', 0)} |",
-            f"| Info | {counts.get('info', 0)} |",
-
-            f"| Duplication | "
-            f"{report.duplication.duplication_percentage}% |",
-
-            f"| Analysis errors | {len(report.errors)} |",
-            f"| Skipped files | {len(report.skipped_files)} |",
-            f"| Inline comments | {comment_count} |",
-
-            ""
-        ]
-
-        if analysis.gate.violations:
-
-            lines.extend([
-                "### Quality Gate Violations",
-                ""
-            ])
-
-            for violation in analysis.gate.violations[:30]:
-
-                lines.append(
-                    f"- **{self.safe_text(violation.metric)}:** "
-                    f"{self.safe_text(violation.message)}"
-                )
-
-        elif not analysis.findings and analysis.gate.passed:
-
-            lines.append(
-                "No issues were detected within the analyzed scope."
-            )
-
-        if report.errors:
-
-            lines.extend([
-                "",
-                "### Analysis Errors",
-                ""
-            ])
-
-            for error in report.errors[:20]:
-
-                lines.append(
-                    f"- {self.safe_text(error.file_path)}: "
-                    f"{self.safe_text(error.stage)} — "
-                    f"{self.safe_text(error.message)}"
-                )
-
-        if report.skipped_files:
-
-            lines.extend([
-                "",
-                "### Skipped Files",
-                ""
-            ])
-
-            for path, reason in list(
-                report.skipped_files.items()
-            )[:20]:
-
-                lines.append(
-                    f"- {self.safe_text(path)}: "
-                    f"{self.safe_text(reason)}"
-                )
-
-        if len(analysis.findings) > comment_count:
-
-            lines.extend([
-                "",
-                "Some findings are summarized rather than "
-                "published as inline comments."
-            ])
-
-        lines.extend([
-            "",
-            "---",
-            "*Automated static analysis powered by CodeSentry.*",
-            "",
-            self.generate_marker(analysis)
-        ])
-
-        return "\n".join(lines)
+    def build_summary(self, analysis: PullRequestAnalysis, comment_count: int) -> str:
+        return (render_summary(analysis) + f"\n\nInline comments: {comment_count}"
+                + "\n\n" + self.generate_marker(analysis))
 
     def already_published(
         self,

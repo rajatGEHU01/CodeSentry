@@ -1,14 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
 venv/
 .venv/
-__pycache__/
-*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Credentials
 .env
 .env.*
 !.env.example
 *.pem
 *.key
-.pytest_cache/
+*.p12
+*.pfx
+
+# IDE
 .vscode/
+.idea/
+
+# Generated files
 reports_output/
 build/
 dist/
+*.egg-info/
+*.log
+
+# Local databases
+*.db
+*.sqlite3
+
+# Operating system
+.DS_Store
+Thumbs.db

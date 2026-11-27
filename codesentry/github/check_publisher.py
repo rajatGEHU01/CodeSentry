@@ -1,3 +1,4 @@
+from codesentry.github.report_format import issue_title, render_summary, safe
 import logging
 
 from datetime import datetime, timezone
@@ -165,7 +166,7 @@ class CheckPublisher:
 
             severity = finding.severity.value
 
-            message = finding.message
+            message = finding.message + f"\n\nRule: {finding.rule_id}"
 
             if finding.suggestion:
 
@@ -188,8 +189,7 @@ class CheckPublisher:
                     ),
 
                 "title": (
-                    f"{severity.upper()} | "
-                    f"{finding.rule_id}"
+                    f"{severity.upper()} — {issue_title(finding)}"
                 )[:255],
 
                 "message": message[:60000]
@@ -197,111 +197,8 @@ class CheckPublisher:
 
         return annotations
 
-    def build_summary(
-        self,
-        analysis: PullRequestAnalysis
-    ) -> str:
-
-        report = analysis.report
-
-        counts = report.severity_counts
-
-        lines = [
-            "## CodeSentry Static Analysis",
-            "",
-            f"**Quality Gate:** "
-            f"{analysis.gate.status.value.upper()}",
-            "",
-            "| Metric | Result |",
-            "|---|---:|",
-
-            f"| Changed files | "
-            f"{analysis.changed_files} |",
-
-            f"| Analyzed files | "
-            f"{analysis.analyzed_files} |",
-
-            f"| Total findings | "
-            f"{len(analysis.findings)} |",
-
-            f"| Critical | "
-            f"{counts.get('critical', 0)} |",
-
-            f"| High | "
-            f"{counts.get('high', 0)} |",
-
-            f"| Medium | "
-            f"{counts.get('medium', 0)} |",
-
-            f"| Low | "
-            f"{counts.get('low', 0)} |",
-
-            f"| Info | "
-            f"{counts.get('info', 0)} |",
-
-            f"| Duplication | "
-            f"{report.duplication.duplication_percentage}% |",
-
-            f"| Analysis errors | "
-            f"{len(report.errors)} |",
-
-            f"| Skipped files | "
-            f"{len(report.skipped_files)} |",
-
-            f"| Analysis duration | "
-            f"{report.duration_seconds:.2f}s |",
-
-            ""
-        ]
-
-        if analysis.gate.violations:
-
-            lines.extend([
-                "### Quality Gate Violations",
-                ""
-            ])
-
-            for violation in analysis.gate.violations[:30]:
-
-                message = str(
-                    violation.message
-                )[:1000]
-
-                message = (
-                    message.replace("&", "&amp;")
-                           .replace("<", "&lt;")
-                           .replace(">", "&gt;")
-                           .replace("@", "@\u200b")
-                )
-
-                lines.append(f"- {message}")
-
-        elif analysis.gate.passed:
-
-            lines.append(
-                "All configured quality thresholds "
-                "have been satisfied."
-            )
-
-        lines.extend([
-            "",
-            "### Analysis Scope",
-            "",
-            "- Python, C++ and SQL analysis",
-            "- Unsafe function detection",
-            "- Hardcoded secret detection",
-            "- Cyclomatic complexity",
-            "- Halstead complexity",
-            "- Duplicate code detection",
-            "",
-            "Results apply to supported files within "
-            "the analyzed pull request.",
-            "",
-            "Static analysis does not guarantee "
-            "that code is free of vulnerabilities."
-        ])
-
-        return "\n".join(lines)
+    def build_summary(self, analysis: PullRequestAnalysis) -> str:
+        return render_summary(analysis)
 
     def complete_check(
         self,

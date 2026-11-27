@@ -19,38 +19,38 @@ class QualityGateConfig:
     max_medium: int = 10
     max_low: int | None = None
 
-    max_duplication: float = 15.0
-    max_complexity: int = 15
+    max_duplication: float = 5.0
+    max_complexity: int = 10
 
     fail_on_analysis_errors: bool = True
     fail_on_skipped_files: bool = True
 
     def __post_init__(self):
 
-        limits = [
-            self.max_critical,
-            self.max_high,
-            self.max_medium,
-            self.max_low
-        ]
+        limits = {
+            "max_critical": self.max_critical,
+            "max_high": self.max_high,
+            "max_medium": self.max_medium,
+            "max_low": self.max_low
+        }
 
-        for limit in limits:
+        for name, value in limits.items():
 
-            if limit is not None and limit < 0:
+            if value is not None and value < 0:
                 raise ValueError(
-                    "Finding limits cannot be negative"
+                    f"{name} cannot be negative"
                 )
 
         if not 0 <= self.max_duplication <= 100:
 
             raise ValueError(
-                "Duplication limit must be between 0 and 100"
+                "max_duplication must be between 0 and 100"
             )
 
         if self.max_complexity < 1:
 
             raise ValueError(
-                "Complexity limit must be positive"
+                "max_complexity must be positive"
             )
 
 
@@ -107,118 +107,168 @@ class QualityGate:
 
         self.config = config or QualityGateConfig()
 
+    @staticmethod
+    def check_limit(
+        violations: list[GateViolation],
+        metric: str,
+        actual: int | float,
+        allowed: int | float | None,
+        message: str
+    ):
+
+        if allowed is None:
+            return
+
+        if actual > allowed:
+
+            violations.append(
+                GateViolation(
+                    metric=metric,
+                    actual=actual,
+                    allowed=allowed,
+                    message=message
+                )
+            )
+
     def evaluate(
         self,
         report: RepositoryReport
     ) -> QualityGateResult:
 
         violations = []
-        incomplete_analysis = False
 
-        def check(metric, actual, allowed, message):
+        config = self.config
 
-            if allowed is None:
-                return
+        has_analysis_error = False
 
-            if actual > allowed:
-
-                violations.append(
-                    GateViolation(
-                        metric=metric,
-                        actual=actual,
-                        allowed=allowed,
-                        message=message
-                    )
-                )
-
-        # Severity-based gates
+        # 1. Security and severity thresholds
 
         counts = report.severity_counts
 
         severity_limits = {
-            "critical": self.config.max_critical,
-            "high": self.config.max_high,
-            "medium": self.config.max_medium,
-            "low": self.config.max_low
+            "critical": config.max_critical,
+            "high": config.max_high,
+            "medium": config.max_medium,
+            "low": config.max_low
         }
 
         for severity, allowed in severity_limits.items():
 
-            check(
+            actual = counts.get(severity, 0)
+
+            self.check_limit(
+                violations=violations,
                 metric=f"{severity}_findings",
-                actual=counts[severity],
+                actual=actual,
                 allowed=allowed,
                 message=(
-                    f"{severity.upper()} findings "
-                    "exceed the allowed limit."
+                    f"{severity.capitalize()} severity findings: "
+                    f"{actual} detected, {allowed} allowed."
                 )
             )
 
-        # Duplication gate
+        # 2. Duplicate code threshold
 
-        check(
-            metric="duplication_percentage",
-            actual=report.duplication.duplication_percentage,
-            allowed=self.config.max_duplication,
-            message="Code duplication exceeds the allowed limit."
+        duplication = (
+            report.duplication.duplication_percentage
         )
 
-        # Function-level complexity gate
+        self.check_limit(
+            violations=violations,
+            metric="duplication",
+            actual=duplication,
+            allowed=config.max_duplication,
+            message=(
+                f"Code duplication is {duplication:.2f}%, "
+                f"maximum allowed is "
+                f"{config.max_duplication:.2f}%."
+            )
+        )
 
-        for result in report.files:
+        # 3. Cyclomatic complexity threshold
 
-            functions = result.metrics.get(
-                "cyclomatic", []
+        for file_result in report.files:
+
+            functions = file_result.metrics.get(
+                "cyclomatic",
+                []
             )
 
             for function in functions:
 
-                name = function["name"]
                 complexity = function["complexity"]
-                line = function["start_line"]
 
-                check(
+                function_name = function.get(
+                    "name",
+                    "unknown"
+                )
+
+                start_line = function.get(
+                    "start_line",
+                    1
+                )
+
+                self.check_limit(
+                    violations=violations,
                     metric="cyclomatic_complexity",
                     actual=complexity,
-                    allowed=self.config.max_complexity,
+                    allowed=config.max_complexity,
                     message=(
-                        f"{result.file_path}:{line} - "
-                        f"Function {name} exceeds "
-                        "the complexity limit."
+                        f"Function '{function_name}' in "
+                        f"{file_result.file_path}:{start_line} "
+                        f"has complexity {complexity}, "
+                        f"maximum allowed is "
+                        f"{config.max_complexity}."
                     )
                 )
 
-        # Analysis completeness
+        # 4. Analysis error handling
 
-        if (
-            self.config.fail_on_analysis_errors
-            and report.errors
-        ):
+        if config.fail_on_analysis_errors:
 
-            incomplete_analysis = True
+            error_count = len(report.errors)
 
-            check(
-                metric="analysis_errors",
-                actual=len(report.errors),
-                allowed=0,
-                message="Analysis could not complete successfully."
-            )
+            if error_count > 0:
 
-        if (
-            self.config.fail_on_skipped_files
-            and report.skipped_files
-        ):
+                has_analysis_error = True
 
-            incomplete_analysis = True
+                violations.append(
+                    GateViolation(
+                        metric="analysis_errors",
+                        actual=error_count,
+                        allowed=0,
+                        message=(
+                            f"{error_count} analysis error(s) "
+                            "prevented complete verification."
+                        )
+                    )
+                )
 
-            check(
-                metric="skipped_files",
-                actual=len(report.skipped_files),
-                allowed=0,
-                message="Some source files could not be analyzed."
-            )
+        # 5. Skipped file handling
 
-        if incomplete_analysis:
+        if config.fail_on_skipped_files:
+
+            skipped_count = len(report.skipped_files)
+
+            if skipped_count > 0:
+
+                has_analysis_error = True
+
+                violations.append(
+                    GateViolation(
+                        metric="skipped_files",
+                        actual=skipped_count,
+                        allowed=0,
+                        message=(
+                            f"{skipped_count} file(s) could "
+                            "not be analyzed."
+                        )
+                    )
+                )
+
+        # 6. Determine final quality gate status
+
+        if has_analysis_error:
 
             status = GateStatus.ERROR
 

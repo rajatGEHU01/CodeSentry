@@ -154,7 +154,7 @@ def test_recommended_fix():
         finding
     )
 
-    assert "Recommended fix" in comment
+    assert "How to fix" in comment
 
     assert "Use a safer alternative" in comment
 
