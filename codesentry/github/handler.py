@@ -2,11 +2,14 @@ import logging
 
 from codesentry.github.auth import GitHubAuth
 from codesentry.github.client import GitHubClient
-
 from codesentry.github.events import PullRequestEvent
 
 from codesentry.github.pr_analyzer import (
     PullRequestAnalyzer
+)
+
+from codesentry.github.review_publisher import (
+    ReviewPublisher
 )
 
 
@@ -20,6 +23,8 @@ class PullRequestHandler:
         self.auth = auth
 
         self.analyzer = PullRequestAnalyzer()
+
+        self.publisher = ReviewPublisher()
 
     def process(self, event: PullRequestEvent):
 
@@ -137,6 +142,11 @@ class PullRequestHandler:
 
             logger.info(
                 "Pull request analysis completed"
+            )
+
+            self.publisher.publish(
+                github,
+                analysis
             )
 
         except Exception as error:
