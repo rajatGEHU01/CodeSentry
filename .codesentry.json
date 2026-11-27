@@ -1,0 +1,29 @@
+{
+    "analysis": {
+        "min_duplicate_tokens": 20,
+        "cyclomatic_threshold": 10,
+        "halstead_volume_threshold": 1000,
+        "entropy_threshold": 3.5,
+        "min_entropy_length": 16,
+        "sql_dialect": null,
+        "max_subquery_depth": 2,
+        "max_file_size": 1000000,
+        "enable_duplication": true,
+        "enable_cyclomatic": true,
+        "enable_halstead": true,
+        "enable_secrets": true,
+        "enable_unsafe_functions": true,
+        "enable_sql": true,
+        "disabled_rules": []
+    },
+    "quality_gate": {
+        "max_critical": 0,
+        "max_high": 0,
+        "max_medium": 10,
+        "max_low": null,
+        "max_duplication": 15.0,
+        "max_complexity": 15,
+        "fail_on_analysis_errors": true,
+        "fail_on_skipped_files": true
+    }
+}

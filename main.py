@@ -1,238 +1,268 @@
+import argparse
+import os
+
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import replace
 
-from codesentry.parsers.cpp_parser import CppParser
-from codesentry.parsers.python_parser import PythonParser
-from codesentry.parsers.language_detector import detect_language
-from codesentry.parsers.tokenizer import tokenize
+from codesentry.core.config_loader import load_config
+from codesentry.core.engine import AnalysisEngine
+from codesentry.core.quality_gate import QualityGate
 
-from codesentry.analyzers.duplicate import DuplicateDetector
-from codesentry.analyzers.cyclomatic import CyclomaticAnalyzer
-from codesentry.analyzers.halstead import HalsteadAnalyzer
-from codesentry.analyzers.secrets import SecretDetector
-from codesentry.analyzers.unsafe_functions import UnsafeFunctionAnalyzer
-from codesentry.analyzers.sql_analyzer import SQLAnalyzer
+from codesentry.reports.console_report import ConsoleReporter
+from codesentry.reports.json_report import JSONReporter
 
-from codesentry.core.models import Finding, Severity
+
+EXCLUDED_DIRECTORIES = {
+    ".git",
+    "venv",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".vscode",
+    "build",
+    "dist",
+    "reports_output"
+}
+
+
+SUPPORTED_EXTENSIONS = {
+    ".cpp", ".cc", ".cxx",
+    ".hpp", ".hh", ".hxx",
+    ".py", ".sql",
+    ".json", ".yaml", ".yml",
+    ".env", ".ini", ".toml",
+    ".cfg", ".txt", ".pem", ".key"
+}
+
+
+def load_files(directory: Path, max_file_size: int):
+
+    files = {}
+    skipped = {}
+
+    for root, directories, filenames in os.walk(directory):
+
+        directories[:] = sorted(
+            name
+            for name in directories
+            if name not in EXCLUDED_DIRECTORIES
+            and not (Path(root) / name).is_symlink()
+        )
+
+        for filename in sorted(filenames):
+
+            path = Path(root) / filename
+
+            relative_path = path.relative_to(
+                directory
+            ).as_posix()
+
+            if (
+                path.suffix.lower()
+                not in SUPPORTED_EXTENSIONS
+                and not filename.startswith(".env")
+            ):
+
+                continue
+
+            if path.is_symlink():
+
+                skipped[relative_path] = "Symbolic link"
+                continue
+
+            try:
+
+                if path.stat().st_size > max_file_size:
+
+                    skipped[relative_path] = (
+                        "File exceeds size limit"
+                    )
+
+                    continue
+
+                with path.open("rb") as file:
+
+                    content = file.read(max_file_size + 1)
+
+                if len(content) > max_file_size:
+
+                    skipped[relative_path] = (
+                        "File exceeds size limit"
+                    )
+
+                    continue
+
+                files[relative_path] = content.decode(
+                    "utf-8"
+                )
+
+            except (OSError, UnicodeDecodeError):
+
+                skipped[relative_path] = (
+                    "Unreadable or non-UTF-8 file"
+                )
+
+    return files, skipped
+
+
+def display_quality_gate(result):
+
+    print("\n" + "=" * 55)
+    print("                 QUALITY GATE")
+    print("=" * 55)
+
+    print(f"STATUS: {result.status.value.upper()}")
+
+    if result.passed:
+
+        print("All quality requirements satisfied.")
+        return
+
+    print(
+        f"Total violations: {len(result.violations)}"
+    )
+
+    for violation in result.violations:
+
+        print(f"\nMetric: {violation.metric}")
+        print(f"Actual: {violation.actual}")
+        print(f"Allowed: {violation.allowed}")
+        print(f"Reason: {violation.message}")
 
 
 def main():
 
-    parsers = {
-        "cpp": CppParser(),
-        "python": PythonParser()
-    }
-
-    duplicate_detector = DuplicateDetector(min_tokens=20)
-    cyclomatic = CyclomaticAnalyzer(threshold=10)
-    halstead = HalsteadAnalyzer(volume_threshold=1000)
-
-    secret_detector = SecretDetector()
-    unsafe_analyzer = UnsafeFunctionAnalyzer()
-
-    sql_analyzer = SQLAnalyzer(
-        dialect=None,
-        max_subquery_depth=2
+    parser = argparse.ArgumentParser(
+        description="CodeSentry Static Analysis Engine"
     )
 
-    repository_tokens = {}
-    all_findings = []
-
-    scanned_files = 0
-    parsed_files = 0
-
-    for path in sorted(Path("samples").rglob("*")):
-
-        if not path.is_file():
-            continue
-
-        file_path = path.as_posix()
-        language = detect_language(file_path)
-
-        try:
-            source = path.read_text(encoding="utf-8")
-
-        except (UnicodeDecodeError, OSError):
-            continue
-
-        scanned_files += 1
-
-        print(f"\n{'=' * 50}")
-        print(f"FILE: {file_path}")
-        print(f"{'=' * 50}")
-
-        security_findings = secret_detector.analyze(
-            source,
-            file_path
-        )
-
-        all_findings.extend(security_findings)
-
-        # SQL analysis
-        if language == "sql":
-
-            sql_findings = sql_analyzer.analyze(
-                source,
-                file_path
-            )
-
-            all_findings.extend(sql_findings)
-
-            if not any(
-                finding.rule_id == "SQL010"
-                for finding in sql_findings
-            ):
-                parsed_files += 1
-
-            print(f"SQL findings: {len(sql_findings)}")
-            continue
-
-        # C++ and Python analysis
-        if language not in parsers:
-            continue
-
-        tree = parsers[language].parse(source)
-
-        if tree.root_node.has_error:
-
-            print("Syntax errors detected.")
-            continue
-
-        parsed_files += 1
-
-        tokens = tokenize(
-            tree.root_node,
-            source
-        )
-
-        repository_tokens[file_path] = tokens
-
-        unsafe_findings = unsafe_analyzer.analyze(
-            tree.root_node,
-            source,
-            language,
-            file_path
-        )
-
-        complexity_metrics, complexity_findings = (
-            cyclomatic.analyze(
-                tree.root_node,
-                source,
-                language,
-                file_path
-            )
-        )
-
-        halstead_metrics, halstead_findings = (
-            halstead.analyze(
-                tokens,
-                language,
-                file_path
-            )
-        )
-
-        all_findings.extend(unsafe_findings)
-        all_findings.extend(complexity_findings)
-        all_findings.extend(halstead_findings)
-
-        print(
-            f"Security findings: "
-            f"{len(security_findings) + len(unsafe_findings)}"
-        )
-
-        print("\nCYCLOMATIC COMPLEXITY")
-
-        for function in complexity_metrics:
-
-            print(
-                f"{function.name}: "
-                f"{function.complexity}"
-            )
-
-        print("\nHALSTEAD METRICS")
-
-        for key, value in asdict(halstead_metrics).items():
-
-            print(f"{key}: {value}")
-
-    # Repository-wide duplication
-    duplication = duplicate_detector.detect_repository(
-        repository_tokens
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        default="samples"
     )
 
-    for block in duplication.blocks:
-
-        all_findings.append(
-            Finding(
-                rule_id="DUP001",
-                message=(
-                    f"Potential duplicate block of "
-                    f"{block.token_count} tokens. "
-                    f"Original: {block.original_file}:"
-                    f"{block.original_start}"
-                ),
-                severity=Severity.MEDIUM,
-                file_path=block.duplicate_file,
-                start_line=block.duplicate_start,
-                end_line=block.duplicate_end,
-                suggestion=(
-                    "Extract common logic into "
-                    "a reusable function."
-                )
-            )
-        )
-
-    severity_order = {
-        "critical": 0,
-        "high": 1,
-        "medium": 2,
-        "low": 3,
-        "info": 4
-    }
-
-    all_findings.sort(
-        key=lambda finding: (
-            severity_order[finding.severity.value],
-            finding.file_path,
-            finding.start_line
-        )
+    parser.add_argument(
+        "--output",
+        default="reports_output/analysis.json"
     )
 
-    print("\n========== REPOSITORY SUMMARY ==========")
+    parser.add_argument(
+        "--config",
+        default=".codesentry.json"
+    )
 
-    print(f"Files scanned: {scanned_files}")
-    print(f"Files parsed: {parsed_files}")
-    print(f"C++/Python tokens: {duplication.total_tokens}")
-    print(f"Duplicated tokens: {duplication.duplicated_tokens}")
-    print(f"Duplication: {duplication.duplication_percentage}%")
-    print(f"Duplicate blocks: {len(duplication.blocks)}")
-    print(f"Total findings: {len(all_findings)}")
+    parser.add_argument(
+        "--complexity",
+        type=int,
+        default=None
+    )
 
-    print("\n========== SEVERITY SUMMARY ==========")
+    parser.add_argument(
+        "--min-tokens",
+        type=int,
+        default=None
+    )
 
-    for severity in Severity:
+    parser.add_argument(
+        "--sql-dialect",
+        default=None
+    )
 
-        count = sum(
-            finding.severity == severity
-            for finding in all_findings
+    parser.add_argument(
+        "--disable-rule",
+        action="append",
+        default=[]
+    )
+
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Do not fail on quality violations"
+    )
+
+    args = parser.parse_args()
+
+    directory = Path(args.directory)
+
+    if not directory.is_dir():
+
+        parser.error(
+            f"Directory does not exist: {directory}"
         )
 
-        print(f"{severity.value.upper()}: {count}")
+    try:
 
-    print("\n========== ANALYSIS FINDINGS ==========")
+        config, gate_config = load_config(args.config)
 
-    for finding in all_findings:
+        overrides = {}
 
-        print(
-            f"\n[{finding.severity.value.upper()}] "
-            f"{finding.rule_id}"
+        if args.complexity is not None:
+
+            overrides["cyclomatic_threshold"] = (
+                args.complexity
+            )
+
+        if args.min_tokens is not None:
+
+            overrides["min_duplicate_tokens"] = (
+                args.min_tokens
+            )
+
+        if args.sql_dialect is not None:
+
+            overrides["sql_dialect"] = args.sql_dialect
+
+        if args.disable_rule:
+
+            overrides["disabled_rules"] = (
+                config.disabled_rules
+                | frozenset(args.disable_rule)
+            )
+
+        config = replace(config, **overrides)
+
+    except (ValueError, TypeError, OSError) as error:
+
+        parser.error(
+            f"Invalid configuration: {type(error).__name__}"
         )
 
-        print(f"File: {finding.file_path}")
-        print(f"Lines: {finding.start_line}-{finding.end_line}")
-        print(f"Message: {finding.message}")
-        print(f"Suggestion: {finding.suggestion}")
+    files, skipped = load_files(
+        directory,
+        config.max_file_size
+    )
+
+    engine = AnalysisEngine(config)
+
+    report = engine.analyze_repository(files)
+
+    report.skipped_files.update(skipped)
+
+    quality_gate = QualityGate(gate_config)
+
+    gate_result = quality_gate.evaluate(report)
+
+    ConsoleReporter.display(report)
+
+    display_quality_gate(gate_result)
+
+    output = JSONReporter.save(
+        report,
+        args.output,
+        gate_result
+    )
+
+    print(f"\nJSON report saved: {output}")
+
+    if args.report_only and gate_result.exit_code == 1:
+
+        return 0
+
+    return gate_result.exit_code
 
 
 if __name__ == "__main__":
-    main()
+
+    raise SystemExit(main())
