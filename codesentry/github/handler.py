@@ -2,7 +2,12 @@ import logging
 
 from codesentry.github.auth import GitHubAuth
 from codesentry.github.client import GitHubClient
+
 from codesentry.github.events import PullRequestEvent
+
+from codesentry.github.pr_analyzer import (
+    PullRequestAnalyzer
+)
 
 
 logger = logging.getLogger("codesentry.handler")
@@ -13,6 +18,8 @@ class PullRequestHandler:
     def __init__(self, auth: GitHubAuth):
 
         self.auth = auth
+
+        self.analyzer = PullRequestAnalyzer()
 
     def process(self, event: PullRequestEvent):
 
@@ -35,10 +42,13 @@ class PullRequestHandler:
                 event.pull_number
             )
 
-            # Ignore outdated webhook events
-            current_sha = pull_request["head"]["sha"]
+            if (
+                pull_request["head"]["sha"]
+                != event.head_sha
 
-            if current_sha != event.head_sha:
+                or pull_request["base"]["sha"]
+                != event.base_sha
+            ):
 
                 logger.info(
                     "Skipping outdated PR event"
@@ -46,29 +56,87 @@ class PullRequestHandler:
 
                 return
 
-            files = github.get_pull_request_files(
-                event.owner,
-                event.repository,
-                event.pull_number
+            if pull_request.get("state") != "open":
+
+                logger.info(
+                    "Skipping closed pull request"
+                )
+
+                return
+
+            if pull_request.get("draft"):
+
+                logger.info(
+                    "Skipping draft pull request"
+                )
+
+                return
+
+            analysis = self.analyzer.analyze(
+                github,
+                event
             )
 
             logger.info(
                 "Changed files: %s",
-                len(files)
+                analysis.changed_files
             )
 
-            for file in files:
+            logger.info(
+                "Analyzed files: %s",
+                analysis.analyzed_files
+            )
+
+            logger.info(
+                "Total findings: %s",
+                len(analysis.findings)
+            )
+
+            logger.info(
+                "Quality gate: %s",
+                analysis.gate.status.value
+            )
+
+            for finding in analysis.findings:
 
                 logger.info(
-                    "File: %r | Status: %s | +%s | -%s",
-                    file["filename"],
-                    file["status"],
-                    file.get("additions", 0),
-                    file.get("deletions", 0)
+                    "[%s] %s | %r:%s",
+
+                    finding.severity.value.upper(),
+
+                    finding.rule_id,
+
+                    finding.file_path,
+
+                    finding.start_line
+                )
+
+            for error in analysis.report.errors:
+
+                logger.warning(
+                    "Analysis error: %r | %s | %s",
+
+                    error.file_path,
+
+                    error.stage,
+
+                    error.message
+                )
+
+            for violation in analysis.gate.violations:
+
+                logger.warning(
+                    "Gate violation: %s | Actual: %s | Allowed: %s",
+
+                    violation.metric,
+
+                    violation.actual,
+
+                    violation.allowed
                 )
 
             logger.info(
-                "PR file retrieval completed successfully"
+                "Pull request analysis completed"
             )
 
         except Exception as error:
