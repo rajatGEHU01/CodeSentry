@@ -1,10 +1,15 @@
 import base64
+import logging
 
 from urllib.parse import quote
 
 import httpx
 
 from codesentry.github.auth import GitHubAuth
+from codesentry.github.retry import RetryPolicy
+
+
+logger = logging.getLogger("codesentry.client")
 
 
 class GitHubClient:
@@ -16,26 +21,28 @@ class GitHubClient:
     ):
 
         self.auth = auth
+
         self.installation_id = installation_id
 
         self.api_url = auth.config.api_url
 
         self.client = auth.client
 
+        self.retry_policy = RetryPolicy()
+
     def request(
         self,
-        method: str,
-        endpoint: str,
+        method,
+        endpoint,
         **kwargs
     ):
 
         if not endpoint.startswith("/"):
-
-            raise ValueError(
-                "Endpoint must start with /"
-            )
+            raise ValueError("Endpoint must start with /")
 
         url = self.api_url + endpoint
+
+        method = method.upper()
 
         for attempt in range(2):
 
@@ -43,11 +50,15 @@ class GitHubClient:
                 self.installation_id
             )
 
-            response = self.client.request(
+            response = self.retry_policy.execute(
                 method,
-                url,
-                headers=self.auth.headers(token),
-                **kwargs
+
+                lambda: self.client.request(
+                    method,
+                    url,
+                    headers=self.auth.headers(token),
+                    **kwargs
+                )
             )
 
             if (
@@ -55,16 +66,25 @@ class GitHubClient:
                 and attempt == 0
             ):
 
+                response.close()
+
                 self.auth.invalidate_token(
                     self.installation_id
                 )
 
                 continue
 
+            if self.retry_policy.is_rate_limited(
+                response
+            ):
+
+                logger.warning(
+                    "GitHub API rate limit reached"
+                )
+
             response.raise_for_status()
 
             if response.status_code == 204:
-
                 return None
 
             return response.json()
@@ -75,12 +95,13 @@ class GitHubClient:
 
     def paginate(
         self,
-        endpoint: str,
-        params: dict | None = None,
-        result_key: str | None = None
+        endpoint,
+        params=None,
+        result_key=None
     ):
 
         results = []
+
         page = 1
 
         while True:
@@ -120,11 +141,7 @@ class GitHubClient:
             result_key="repositories"
         )
 
-    def get_repository(
-        self,
-        owner: str,
-        repo: str
-    ):
+    def get_repository(self, owner, repo):
 
         return self.request(
             "GET",
@@ -133,22 +150,21 @@ class GitHubClient:
 
     def get_pull_request(
         self,
-        owner: str,
-        repo: str,
-        pull_number: int
+        owner,
+        repo,
+        pull_number
     ):
 
         return self.request(
             "GET",
-            f"/repos/{owner}/{repo}"
-            f"/pulls/{pull_number}"
+            f"/repos/{owner}/{repo}/pulls/{pull_number}"
         )
 
     def get_pull_request_files(
         self,
-        owner: str,
-        repo: str,
-        pull_number: int
+        owner,
+        repo,
+        pull_number
     ):
 
         return self.paginate(
@@ -158,11 +174,11 @@ class GitHubClient:
 
     def get_file_content(
         self,
-        owner: str,
-        repo: str,
-        file_path: str,
-        ref: str
-    ) -> str:
+        owner,
+        repo,
+        file_path,
+        ref
+    ):
 
         encoded_path = quote(
             file_path,
@@ -171,28 +187,21 @@ class GitHubClient:
 
         data = self.request(
             "GET",
+
             f"/repos/{owner}/{repo}"
             f"/contents/{encoded_path}",
+
             params={"ref": ref}
         )
 
         if not isinstance(data, dict):
-
-            raise ValueError(
-                "Requested path is not a file"
-            )
+            raise ValueError("Requested path is not a file")
 
         if data.get("type") != "file":
-
-            raise ValueError(
-                "Unsupported content type"
-            )
+            raise ValueError("Unsupported content type")
 
         if data.get("encoding") != "base64":
-
-            raise ValueError(
-                "Unsupported file encoding"
-            )
+            raise ValueError("Unsupported file encoding")
 
         content = base64.b64decode(
             data["content"]

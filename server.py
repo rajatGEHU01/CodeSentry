@@ -1,18 +1,13 @@
 import json
 import logging
+import asyncio
 
 from contextlib import asynccontextmanager
 
-from fastapi import (
-    FastAPI,
-    Request,
-    HTTPException,
-    BackgroundTasks
-)
+from fastapi import FastAPI, Request, HTTPException
 
 from codesentry.github.config import GitHubConfig
 from codesentry.github.auth import GitHubAuth
-
 from codesentry.github.webhook import WebhookVerifier
 
 from codesentry.github.events import (
@@ -22,18 +17,23 @@ from codesentry.github.events import (
 
 from codesentry.github.handler import PullRequestHandler
 
+from codesentry.github.job_queue import (
+    AnalysisJobQueue,
+    SubmissionStatus
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
     format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
+        "%(asctime)s | %(levelname)s | "
+        "%(name)s | %(message)s"
     )
 )
 
+
 logger = logging.getLogger("codesentry.server")
+
 
 MAX_PAYLOAD_SIZE = 25 * 1024 * 1024
 
@@ -49,9 +49,24 @@ async def lifespan(app: FastAPI):
 
     auth = GitHubAuth(config)
 
+    handler = PullRequestHandler(auth)
+
+    job_queue = AnalysisJobQueue(
+        handler=handler,
+        workers=2,
+        max_queue_size=50,
+        delivery_ttl=3600
+    )
+
     app.state.auth = auth
+
     app.state.verifier = verifier
-    app.state.handler = PullRequestHandler(auth)
+
+    app.state.handler = handler
+
+    app.state.job_queue = job_queue
+
+    job_queue.start()
 
     logger.info("CodeSentry server started")
 
@@ -61,6 +76,10 @@ async def lifespan(app: FastAPI):
 
     finally:
 
+        await asyncio.to_thread(
+            job_queue.stop
+        )
+
         auth.close()
 
         logger.info("CodeSentry server stopped")
@@ -69,10 +88,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="CodeSentry",
     description=(
-        "Automated code quality and "
-        "security analysis for GitHub"
+        "Automated code quality and security "
+        "analysis for GitHub"
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan
 )
 
@@ -82,13 +101,23 @@ async def root():
 
     return {
         "application": "CodeSentry",
+        "github_app": "LIMECODE247",
         "status": "running",
-        "version": "0.1.0"
+        "version": "0.2.0"
     }
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
+
+    stats = request.app.state.job_queue.stats()
+
+    if not stats["running"]:
+
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis queue unavailable"
+        )
 
     return {
         "status": "healthy"
@@ -96,10 +125,7 @@ async def health():
 
 
 @app.post("/webhook", status_code=202)
-async def github_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks
-):
+async def github_webhook(request: Request):
 
     signature = request.headers.get(
         "X-Hub-Signature-256"
@@ -112,8 +138,6 @@ async def github_webhook(
     delivery_id = request.headers.get(
         "X-GitHub-Delivery"
     )
-
-    # Read raw payload with a size limit
 
     payload_buffer = bytearray()
 
@@ -130,11 +154,12 @@ async def github_webhook(
 
     raw_payload = bytes(payload_buffer)
 
-    # Verify authenticity before processing JSON
-
     verifier = request.app.state.verifier
 
-    if not verifier.verify(raw_payload, signature):
+    if not verifier.verify(
+        raw_payload,
+        signature
+    ):
 
         raise HTTPException(
             status_code=401,
@@ -172,16 +197,12 @@ async def github_webhook(
         delivery_id
     )
 
-    # GitHub connection test
-
     if event_type == "ping":
 
         return {
             "status": "success",
             "message": "CodeSentry webhook connected"
         }
-
-    # Ignore unrelated events
 
     if event_type != "pull_request":
 
@@ -192,7 +213,10 @@ async def github_webhook(
 
     action = payload.get("action")
 
-    if not isinstance(action, str) or action not in SUPPORTED_ACTIONS:
+    if (
+        not isinstance(action, str)
+        or action not in SUPPORTED_ACTIONS
+    ):
 
         return {
             "status": "ignored",
@@ -206,7 +230,12 @@ async def github_webhook(
             delivery_id
         )
 
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        AttributeError
+    ):
 
         raise HTTPException(
             status_code=400,
@@ -220,11 +249,32 @@ async def github_webhook(
             "reason": "Draft pull request"
         }
 
-    # Process after sending the HTTP response
+    job_queue = request.app.state.job_queue
 
-    background_tasks.add_task(
-        request.app.state.handler.process,
-        event
+    result = job_queue.submit(event)
+
+    if result == SubmissionStatus.DUPLICATE:
+
+        return {
+            "status": "duplicate",
+            "delivery_id": delivery_id
+        }
+
+    if result in {
+        SubmissionStatus.FULL,
+        SubmissionStatus.STOPPED
+    }:
+
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis queue unavailable",
+            headers={"Retry-After": "60"}
+        )
+
+    logger.info(
+        "Job queued | PR #%s | Queue size: %s",
+        event.pull_number,
+        job_queue.stats()["queued"]
     )
 
     return {
