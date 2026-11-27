@@ -1,6 +1,7 @@
 {
     "analysis": {
-        "min_duplicate_tokens": 20,
+        "min_duplicate_tokens": 30,
+        "min_duplicate_lines": 4,
         "cyclomatic_threshold": 10,
         "halstead_volume_threshold": 1000,
         "entropy_threshold": 3.5,
@@ -14,6 +15,7 @@
         "enable_secrets": true,
         "enable_unsafe_functions": true,
         "enable_sql": true,
+        "enable_flow": true,
         "disabled_rules": []
     },
     "quality_gate": {
@@ -21,8 +23,8 @@
         "max_high": 0,
         "max_medium": 10,
         "max_low": null,
-        "max_duplication": 15.0,
-        "max_complexity": 15,
+        "max_duplication": 5.0,
+        "max_complexity": 10,
         "fail_on_analysis_errors": true,
         "fail_on_skipped_files": true
     }

@@ -314,11 +314,21 @@ class PullRequestAnalyzer:
 
         gate_result = quality_gate.evaluate(report)
 
+        failed_files = {
+            error.file_path
+            for error in report.errors
+        }
+
+        analyzed_count = sum(
+            result.file_path not in failed_files
+            for result in report.files
+        )
+
         return PullRequestAnalysis(
             event=event,
             report=report,
             gate=gate_result,
             changed_files=len(changed_files),
-            analyzed_files=len(report.files),
+            analyzed_files=analyzed_count,
             diffs=diffs
         )

@@ -98,6 +98,12 @@ def test_invalid_syntax():
 
     assert len(report.errors) > 0
 
+    assert any(
+        error.stage == "parser"
+        and "line" in error.message
+        for error in report.errors
+    )
+
 
 def test_json_report():
 
@@ -122,7 +128,12 @@ int sum(int a, int b) {
 }
 """
 
-    report = AnalysisEngine().analyze_repository({
+    config = AnalysisConfig(
+        min_duplicate_tokens=20,
+        min_duplicate_lines=1
+    )
+
+    report = AnalysisEngine(config).analyze_repository({
         "first.cpp": source,
         "second.cpp": source
     })
@@ -131,5 +142,114 @@ int sum(int a, int b) {
 
     assert any(
         item.rule_id == "DUP001"
+        for item in report.findings
+    )
+
+
+def test_flow_integration():
+
+    source = """
+def calculate():
+    return 10
+    print(20)
+"""
+
+    report = AnalysisEngine().analyze_repository({
+        "test.py": source
+    })
+
+    assert report.errors == []
+
+    assert any(
+        item.rule_id == "CFG001"
+        for item in report.findings
+    )
+
+    assert "control_flow" in report.files[0].metrics
+
+
+def test_sql_injection_integration():
+
+    source = """
+username = input()
+query = "SELECT * FROM users WHERE name = " + username
+cursor.execute(query)
+"""
+
+    report = AnalysisEngine().analyze_repository({
+        "test.py": source
+    })
+
+    assert report.errors == []
+
+    assert any(
+        item.rule_id == "TAINT001"
+        for item in report.findings
+    )
+
+
+def test_command_injection_integration():
+
+    source = """
+import os
+
+command = input()
+os.system(command)
+"""
+
+    report = AnalysisEngine().analyze_repository({
+        "test.py": source
+    })
+
+    assert report.errors == []
+
+    assert any(
+        item.rule_id == "TAINT002"
+        for item in report.findings
+    )
+
+
+def test_disabled_flow():
+
+    config = AnalysisConfig(
+        enable_flow=False
+    )
+
+    source = """
+def calculate():
+    return 10
+    print(20)
+"""
+
+    report = AnalysisEngine(config).analyze_repository({
+        "test.py": source
+    })
+
+    assert not any(
+        item.rule_id == "CFG001"
+        for item in report.findings
+    )
+
+    assert "control_flow" not in report.files[0].metrics
+
+
+def test_safe_parameterized_query():
+
+    source = """
+username = input()
+cursor.execute(
+    "SELECT * FROM users WHERE name = ?",
+    (username,)
+)
+"""
+
+    report = AnalysisEngine().analyze_repository({
+        "test.py": source
+    })
+
+    assert report.errors == []
+
+    assert not any(
+        item.rule_id == "TAINT001"
         for item in report.findings
     )

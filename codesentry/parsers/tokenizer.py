@@ -57,24 +57,8 @@ def tokenize(root, source_code: str) -> list[Token]:
 
 def normalize_tokens(tokens: list[Token]) -> list[str]:
 
-    normalized = []
-
-    for token in tokens:
-
-        if token.type in {
-            "identifier",
-            "field_identifier"
-        }:
-            normalized.append("ID")
-
-        elif token.type in {
-            "number_literal",
-            "integer",
-            "float"
-        }:
-            normalized.append("NUM")
-
-        else:
-            normalized.append(token.value)
-
-    return normalized
+    return [
+        "ID" if token.type == "identifier"
+        else token.value
+        for token in tokens
+    ]

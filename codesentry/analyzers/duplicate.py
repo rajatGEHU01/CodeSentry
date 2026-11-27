@@ -18,12 +18,22 @@ class DuplicateDetector:
     BASE = 257
     MOD = 1_000_000_007
 
-    def __init__(self, min_tokens: int = 20):
+    MAX_CANDIDATES = 64
+
+    def __init__(
+        self,
+        min_tokens: int = 30,
+        min_lines: int = 4
+    ):
 
         if min_tokens < 1:
             raise ValueError("min_tokens must be positive")
 
+        if min_lines < 1:
+            raise ValueError("min_lines must be positive")
+
         self.min_tokens = min_tokens
+        self.min_lines = min_lines
 
     def rolling_hash(
         self,
@@ -40,6 +50,7 @@ class DuplicateDetector:
         current_hash = 0
 
         for value in values[:k]:
+
             current_hash = (
                 current_hash * self.BASE + value
             ) % self.MOD
@@ -72,7 +83,7 @@ class DuplicateDetector:
 
         k = self.min_tokens
 
-        # Shared token dictionary across all files
+        # Encode normalized tokens using shared IDs.
         for path, tokens in files.items():
 
             normalized = normalize_tokens(tokens)
@@ -88,7 +99,7 @@ class DuplicateDetector:
             encoded_files[path] = values
             result.total_tokens += len(values)
 
-        # Repository-wide duplicate detection
+        # Detect duplicate blocks across supported files.
         for path, values in encoded_files.items():
 
             language = detect_language(path)
@@ -109,21 +120,22 @@ class DuplicateDetector:
                     best_match = None
                     best_length = 0
 
-                    for previous_path, previous_start in candidates:
+                    for previous_path, previous_start in (
+                        candidates[-self.MAX_CANDIDATES:]
+                    ):
 
                         previous_values = encoded_files[
                             previous_path
                         ]
 
-                        # Prevent overlapping matches
-                        # within the same file
+                        # Prevent overlapping same-file matches.
                         if (
                             previous_path == path
                             and previous_start + k > start
                         ):
                             continue
 
-                        # Verify hash collision
+                        # Verify actual tokens after hash matching.
                         if (
                             previous_values[
                                 previous_start:previous_start + k
@@ -132,9 +144,9 @@ class DuplicateDetector:
                         ):
                             continue
 
-                        # Extend the matching block
                         length = k
 
+                        # Extend the matching block.
                         while (
                             start + length < len(values)
                             and previous_start + length
@@ -157,6 +169,28 @@ class DuplicateDetector:
 
                             length += 1
 
+                        previous_tokens = files[previous_path]
+
+                        current_lines = (
+                            tokens[start + length - 1].line
+                            - tokens[start].line + 1
+                        )
+
+                        previous_lines = (
+                            previous_tokens[
+                                previous_start + length - 1
+                            ].line
+                            - previous_tokens[previous_start].line
+                            + 1
+                        )
+
+                        # Reject blocks that span too few lines.
+                        if (
+                            current_lines < self.min_lines
+                            or previous_lines < self.min_lines
+                        ):
+                            continue
+
                         if length > best_length:
 
                             best_length = length
@@ -175,21 +209,30 @@ class DuplicateDetector:
                         result.blocks.append(
                             DuplicateBlock(
                                 original_file=previous_path,
+
                                 original_start=previous_tokens[
                                     previous_start
                                 ].line,
+
                                 original_end=previous_tokens[
                                     previous_start + best_length - 1
                                 ].line,
+
                                 duplicate_file=path,
-                                duplicate_start=tokens[start].line,
+
+                                duplicate_start=tokens[
+                                    start
+                                ].line,
+
                                 duplicate_end=tokens[
                                     start + best_length - 1
                                 ].line,
+
                                 token_count=best_length
                             )
                         )
 
+                        # Count each duplicated token only once.
                         duplicated[previous_path].update(
                             range(
                                 previous_start,
@@ -198,7 +241,10 @@ class DuplicateDetector:
                         )
 
                         duplicated[path].update(
-                            range(start, start + best_length)
+                            range(
+                                start,
+                                start + best_length
+                            )
                         )
 
                         covered_until = start + best_length
@@ -225,6 +271,7 @@ class DuplicateDetector:
         return [
             Finding(
                 rule_id="DUP001",
+
                 message=(
                     f"Potential duplicate code "
                     f"({block.token_count} tokens). "
@@ -232,10 +279,15 @@ class DuplicateDetector:
                     f"{block.original_file}:"
                     f"{block.original_start}."
                 ),
+
                 severity=Severity.MEDIUM,
+
                 file_path=block.duplicate_file,
+
                 start_line=block.duplicate_start,
+
                 end_line=block.duplicate_end,
+
                 suggestion=(
                     "Extract common logic into "
                     "a reusable function."

@@ -18,8 +18,10 @@ from codesentry.parsers.cpp_parser import CppParser
 from codesentry.parsers.python_parser import PythonParser
 from codesentry.parsers.language_detector import detect_language
 from codesentry.parsers.tokenizer import tokenize
+from codesentry.parsers.ast_utils import traverse_ast
 
 from codesentry.analyzers.duplicate import DuplicateDetector
+from codesentry.analyzers.flow import FlowAnalyzer
 from codesentry.analyzers.cyclomatic import CyclomaticAnalyzer
 from codesentry.analyzers.halstead import HalsteadAnalyzer
 from codesentry.analyzers.secrets import SecretDetector
@@ -42,7 +44,8 @@ class AnalysisEngine:
         }
 
         self.duplicate_detector = DuplicateDetector(
-            min_tokens=self.config.min_duplicate_tokens
+            min_tokens=self.config.min_duplicate_tokens,
+            min_lines=self.config.min_duplicate_lines
         )
 
         self.cyclomatic = CyclomaticAnalyzer(
@@ -59,6 +62,8 @@ class AnalysisEngine:
         )
 
         self.unsafe_analyzer = UnsafeFunctionAnalyzer()
+
+        self.flow_analyzer = FlowAnalyzer()
 
         self.sql_analyzer = SQLAnalyzer(
             dialect=self.config.sql_dialect,
@@ -174,13 +179,33 @@ class AnalysisEngine:
         if tree is None:
             return result, tokens
 
+        # Report precise syntax error locations
         if tree.root_node.has_error:
+
+            locations = []
+
+            for node in traverse_ast(tree.root_node):
+
+                if node.is_error or node.is_missing:
+
+                    locations.append(
+                        f"line {node.start_point.row + 1}, "
+                        f"byte column {node.start_point.column + 1}"
+                    )
+
+                if len(locations) >= 5:
+                    break
+
+            message = "Source contains syntax errors"
+
+            if locations:
+                message += " at " + "; ".join(locations)
 
             report.errors.append(
                 AnalysisError(
                     file_path=file_path,
                     stage="parser",
-                    message="Source contains syntax errors"
+                    message=message
                 )
             )
 
@@ -188,6 +213,7 @@ class AnalysisEngine:
 
         root = tree.root_node
 
+        # Tokenization
         parsed_tokens = self.run_analyzer(
             report,
             file_path,
@@ -216,6 +242,30 @@ class AnalysisEngine:
             )
 
             if findings is not None:
+                result.findings.extend(findings)
+
+        # Python control flow and taint analysis
+        if (
+            language == "python"
+            and self.config.enable_flow
+        ):
+
+            output = self.run_analyzer(
+                report,
+                file_path,
+                "flow",
+                lambda: self.flow_analyzer.analyze(
+                    source_code,
+                    file_path
+                )
+            )
+
+            if output is not None:
+
+                metrics, findings = output
+
+                result.metrics["control_flow"] = metrics
+
                 result.findings.extend(findings)
 
         # Cyclomatic complexity
@@ -287,6 +337,7 @@ class AnalysisEngine:
 
         for file_path, source_code in sorted(files.items()):
 
+            # Skip binary content
             if "\x00" in source_code:
 
                 report.skipped_files[file_path] = (
@@ -295,6 +346,7 @@ class AnalysisEngine:
 
                 continue
 
+            # Skip oversized files
             if (
                 len(source_code.encode("utf-8"))
                 > self.config.max_file_size
@@ -338,16 +390,22 @@ class AnalysisEngine:
 
                     finding = Finding(
                         rule_id="DUP001",
+
                         message=(
                             f"Potential duplicate block of "
                             f"{block.token_count} tokens. "
                             f"Original: {block.original_file}:"
                             f"{block.original_start}"
                         ),
+
                         severity=Severity.MEDIUM,
+
                         file_path=block.duplicate_file,
+
                         start_line=block.duplicate_start,
+
                         end_line=block.duplicate_end,
+
                         suggestion=(
                             "Extract common logic into "
                             "a reusable function."

@@ -4,7 +4,10 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class AnalysisConfig:
 
-    min_duplicate_tokens: int = 20
+    min_duplicate_tokens: int = 30
+    min_duplicate_lines: int = 4
+
+    enable_flow: bool = True
 
     cyclomatic_threshold: int = 10
     halstead_volume_threshold: float = 1000
@@ -32,6 +35,7 @@ class AnalysisConfig:
 
         positive_values = {
             "min_duplicate_tokens": self.min_duplicate_tokens,
+            "min_duplicate_lines": self.min_duplicate_lines,
             "cyclomatic_threshold": self.cyclomatic_threshold,
             "halstead_volume_threshold": self.halstead_volume_threshold,
             "entropy_threshold": self.entropy_threshold,
