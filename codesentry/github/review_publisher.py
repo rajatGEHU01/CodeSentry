@@ -1,12 +1,8 @@
+from codesentry.github.report_format import issue_title, render_summary, safe
 import hashlib
 import json
 import logging
 
-from codesentry.github.report_format import (
-    issue_title,
-    render_summary,
-    safe
-)
 from codesentry.github.client import GitHubClient
 from codesentry.github.pr_analyzer import PullRequestAnalysis
 
@@ -28,10 +24,10 @@ class ReviewPublisher:
 
     SEVERITY_ICONS = {
         "critical": "🔴",
-        "high": "🟠",
-        "medium": "🟡",
-        "low": "🔵",
-        "info": "⚪"
+        "high": "🔴",
+        "medium": "🟠",
+        "low": "🟡",
+        "info": "🔵"
     }
 
     def get_review_endpoint(
@@ -88,60 +84,23 @@ class ReviewPublisher:
     @staticmethod
     def safe_text(value, limit=1500):
 
-        return safe(value, limit)
+        text = str(value)[:limit]
+
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("@", "@\u200b")
+        )
 
     def build_comment(self, finding) -> str:
-
         severity = finding.severity.value
-
-        icon = self.SEVERITY_ICONS.get(
-            severity,
-            "⚪"
-        )
-
-        title = safe(issue_title(finding))
-
-        rule = safe(finding.rule_id)
-
-        recommendation = (
-            finding.suggestion
-            or "Review the affected code."
-        )
-
-        body = [
-            f"### {icon} {title}",
-            "",
-            "| Property | Details |",
-            "|---|---|",
-            f"| Severity | **{severity.upper()}** |",
-            f"| Rule | `{rule}` |",
-            f"| File | {safe(finding.file_path, 250)} |",
-            f"| Line | {finding.start_line} |",
-            "",
-            "#### Problem",
-            "",
-            safe(finding.message, 1500),
-            "",
-            "#### How to fix",
-            "",
-            safe(recommendation, 1500),
-            ""
-        ]
-
-        if severity in ("critical", "high"):
-
-            body.extend([
-                "> This potential issue should be "
-                "reviewed before merging.",
-                ""
-            ])
-
-        body.extend([
-            "---",
-            "",
-            "*Detected by CodeSentry Static Analysis Engine*"
-        ])
-
+        icon = self.SEVERITY_ICONS.get(severity, "⚪")
+        body = [f"{icon} **{safe(issue_title(finding))}** — {severity.upper()}",
+                "", "**Problem**", safe(finding.message, 1500)]
+        if finding.suggestion:
+            body += ["", "**How to fix**", safe(finding.suggestion, 1500)]
+        body += ["", f"Rule: `{safe(finding.rule_id)}` · CodeSentry"]
         return "\n".join(body)
 
     def build_comments(
@@ -212,91 +171,9 @@ class ReviewPublisher:
 
         return comments
 
-    def build_summary(
-        self,
-        analysis: PullRequestAnalysis,
-        comment_count: int
-    ) -> str:
-
-        total = len(analysis.findings)
-
-        lines = [
-            render_summary(analysis),
-            "",
-            "---",
-            "",
-            "## Review Coverage",
-            "",
-            "| Review metric | Result |",
-            "|---|---:|",
-            f"| Total findings | {total} |",
-            f"| Inline comments | {comment_count} |",
-            (
-                f"| Findings without separate "
-                f"inline comments | "
-                f"{max(0, total - comment_count)} |"
-            ),
-            ""
-        ]
-
-        if total > comment_count:
-
-            lines.extend([
-                "Inline comments are limited to "
-                "eligible changed lines and the "
-                "configured comment limit.",
-                ""
-            ])
-
-        lines.extend([
-            "## Developer Next Steps",
-            ""
-        ])
-
-        status = analysis.gate.status.value
-
-        if status == "passed":
-
-            lines.extend([
-                "The configured quality gate has passed.",
-                "",
-                "Review any remaining findings "
-                "before merging.",
-                ""
-            ])
-
-        elif status == "error":
-
-            lines.extend([
-                "Analysis coverage is incomplete.",
-                "",
-                "Review the reported errors and "
-                "retry the analysis.",
-                ""
-            ])
-
-        else:
-
-            lines.extend([
-                "1. Review the reported findings.",
-                "2. Apply the recommended corrections.",
-                "3. Commit and push the updated code.",
-                "4. CodeSentry will reanalyze the pull request.",
-                "5. Verify the updated quality gate result.",
-                ""
-            ])
-
-        lines.extend([
-            "---",
-            "",
-            "*Automated static analysis powered by CodeSentry.*"
-        ])
-
-        summary = "\n".join(lines)
-
-        marker = self.generate_marker(analysis)
-
-        return summary[:60000] + "\n\n" + marker
+    def build_summary(self, analysis: PullRequestAnalysis, comment_count: int) -> str:
+        return (render_summary(analysis) + f"\n\nInline comments: {comment_count}"
+                + "\n\n" + self.generate_marker(analysis))
 
     def already_published(
         self,

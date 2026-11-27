@@ -1,5 +1,3 @@
-
-
 from urllib.parse import quote
 import html
 import re
@@ -114,32 +112,12 @@ def location(analysis, f):
         f"[{safe(f.file_path, 180)}:"
         f"{f.start_line}]({url})"
     )
-def severity_bar(count, total, width=20):
-
-    if total == 0 or count == 0:
-        filled = 0
-    else:
-        filled = max(1, round(count / total * width))
-
-    filled = min(filled, width)
-
-    return "█" * filled + "░" * (width - filled)
-
-
-def severity_icon(severity):
-
-    return {
-        "critical": "🔴",
-        "high": "🟠",
-        "medium": "🟡",
-        "low": "🔵",
-        "info": "⚪"
-    }.get(severity, "⚪")
 
 
 def render_summary(analysis):
 
     report = analysis.report
+
     status = analysis.gate.status.value
 
     severity_order = {
@@ -159,148 +137,6 @@ def render_summary(analysis):
         )
     )
 
-    total = len(findings)
-
-    counts = {
-        severity: 0
-        for severity in severity_order
-    }
-
-    for finding in findings:
-
-        severity = finding.severity.value
-
-        if severity in counts:
-            counts[severity] += 1
-
-    duplication = report.duplication.duplication_percentage
-
-    # Collect function complexity metrics
-    functions = []
-
-    for result in report.files:
-
-        for function in result.metrics.get("cyclomatic", []):
-
-            functions.append({
-                "name": function["name"],
-                "complexity": function["complexity"],
-                "file": result.file_path,
-                "line": function["start_line"]
-            })
-
-    functions.sort(
-        key=lambda f: f["complexity"],
-        reverse=True
-    )
-
-    max_complexity = (
-        functions[0]["complexity"]
-        if functions else None
-    )
-
-    status_text = {
-        "passed": "🟢 PASSED",
-        "failed": "🔴 FAILED",
-        "error": "⚠️ ANALYSIS INCOMPLETE"
-    }.get(status, status.upper())
-
-    # Main overview
-    lines = [
-        "# 🛡️ CodeSentry",
-        "",
-        "Automated Security & Code Quality Analysis",
-        "",
-        f"## Quality Gate: {status_text}",
-        "",
-        "| Analysis metric | Result |",
-        "|---|---:|",
-        f"| Files changed | {analysis.changed_files} |",
-        f"| Files analyzed | {analysis.analyzed_files} |",
-        f"| Total findings | **{total}** |",
-        f"| Token duplication | **{duplication:.2f}%** |",
-        (
-            f"| Maximum complexity | "
-            f"{max_complexity if max_complexity is not None else 'N/A'} |"
-        ),
-        f"| Analysis errors | {len(report.errors)} |",
-        f"| Skipped files | {len(report.skipped_files)} |",
-        f"| Analysis time | {report.duration_seconds:.3f}s |",
-        "",
-        "---",
-        "",
-        "## Severity Distribution",
-        "",
-        "| Severity | Distribution | Count |",
-        "|---|---|---:|"
-    ]
-
-    # Severity visualization
-    for severity, count in counts.items():
-
-        bar = severity_bar(count, total)
-
-        lines.append(
-            f"| {severity_icon(severity)} "
-            f"{severity.capitalize()} | "
-            f"`{bar}` | **{count}** |"
-        )
-
-    lines += ["", "---", ""]
-
-    # Quality gate evaluation
-    lines += [
-        "## Quality Gate Evaluation",
-        ""
-    ]
-
-    if analysis.gate.violations:
-
-        lines += [
-            "| Status | Metric | Actual | Allowed |",
-            "|---|---|---:|---:|"
-        ]
-
-        for violation in analysis.gate.violations[:20]:
-
-            metric = violation.metric.replace(
-                "_", " "
-            ).title()
-
-            unit = (
-                "%"
-                if violation.metric == "duplication"
-                else ""
-            )
-
-            lines.append(
-                f"| ❌ | {safe(metric)} | "
-                f"**{safe(violation.actual)}{unit}** | "
-                f"{safe(violation.allowed)}{unit} |"
-            )
-
-        lines += [
-            "",
-            "> The pull request does not satisfy "
-            "the configured quality requirements.",
-            ""
-        ]
-
-    elif status == "passed":
-
-        lines += [
-            "✅ All configured quality gate conditions passed.",
-            ""
-        ]
-
-    else:
-
-        lines += [
-            "⚠️ Quality gate evaluation is incomplete.",
-            ""
-        ]
-
-    # Categorize findings
     groups = {
         "Security risks": [],
         "SQL issues": [],
@@ -312,211 +148,168 @@ def render_summary(analysis):
 
         groups[category(finding)].append(finding)
 
-    lines += [
-        "---",
+    status_titles = {
+        "passed": "Passed",
+        "failed": "Changes needed",
+        "error": "Analysis incomplete"
+    }
+
+    lines = [
+        "## CodeSentry — " + status_titles.get(
+            status, status
+        ),
+
         "",
-        "## Issue Overview",
+
+        (
+            f"**{len(findings)} finding(s)** · "
+            f"{analysis.analyzed_files}/"
+            f"{analysis.changed_files} files fully analyzed · "
+            f"{report.duration_seconds:.3f}s"
+        ),
+
         "",
-        "| Category | Findings |",
-        "|---|---:|",
-        f"| 🔐 Security risks | {len(groups['Security risks'])} |",
-        f"| 🗄️ SQL issues | {len(groups['SQL issues'])} |",
-        f"| ⚙️ Code quality | {len(groups['Code quality'])} |",
-        f"| 📑 Code duplication | {len(groups['Code duplication'])} |",
+
+        (
+            f"**Security:** {len(groups['Security risks'])} · "
+            f"**SQL:** {len(groups['SQL issues'])} · "
+            f"**Quality:** {len(groups['Code quality'])} · "
+            f"**Duplicate findings:** "
+            f"{len(groups['Code duplication'])}"
+        ),
+
         ""
     ]
 
-    # Expandable findings
-    lines += [
-        "## Detailed Findings",
-        ""
-    ]
+    # Quality gate violations
+    if analysis.gate.violations:
 
-    if not findings:
+        lines += [
+            "### Why the quality gate failed",
+            "",
+            "| Metric | Actual | Allowed |",
+            "|---|---:|---:|"
+        ]
 
-        if report.errors or report.skipped_files:
+        for violation in analysis.gate.violations[:20]:
 
-            lines.append(
-                "⚠️ No findings reported, but analysis "
-                "coverage is incomplete."
+            label = violation.metric.replace(
+                "_", " "
+            ).capitalize()
+
+            unit = (
+                "%"
+                if violation.metric == "duplication"
+                else ""
             )
 
-        elif analysis.analyzed_files == 0:
-
-            lines.append("No eligible files were analyzed.")
-
-        else:
-
             lines.append(
-                "✅ No issues detected within the analyzed scope."
+                f"| {safe(label)} | "
+                f"{safe(violation.actual)}{unit} | "
+                f"{safe(violation.allowed)}{unit} |"
             )
 
         lines.append("")
 
-    for group, items in groups.items():
+    # Group findings by category
+    for name, items in groups.items():
 
         if not items:
             continue
 
         lines += [
-            f"### {group} ({len(items)})",
-            ""
+            f"### {name} ({len(items)})",
+            "",
+            "| Severity | Issue | Location |",
+            "|---|---|---|"
         ]
 
-        limit = 10
+        cap = 8 if name == "Code duplication" else 15
 
-        for finding in items[:limit]:
-
-            severity = finding.severity.value
-
-            title = html.escape(
-                issue_title(finding)
-            )
-
-            lines += [
-                "<details>",
-                (
-                    f"<summary>"
-                    f"{severity_icon(severity)} "
-                    f"{severity.upper()} — "
-                    f"{title} "
-                    f"({html.escape(finding.rule_id)})"
-                    f"</summary>"
-                ),
-                "",
-                f"**Location:** {location(analysis, finding)}",
-                "",
-                f"**Rule:** `{safe(finding.rule_id)}`",
-                "",
-                f"**Problem:** {safe(finding.message)}",
-                "",
-                (
-                    f"**How to fix:** "
-                    f"{safe(finding.suggestion or 'Review the affected code.')}"
-                ),
-                "",
-                "</details>",
-                ""
-            ]
-
-        if len(items) > limit:
-
-            lines += [
-                f"Showing {limit} of {len(items)} findings.",
-                ""
-            ]
-
-    # Function complexity visualization
-    lines += [
-        "---",
-        "",
-        "## Function Complexity",
-        ""
-    ]
-
-    if functions:
-
-        scale = max(
-            1,
-            max_complexity
-        )
-
-        lines += [
-            "| Function | Complexity | Score |",
-            "|---|---|---:|"
-        ]
-
-        for function in functions[:10]:
-
-            score = function["complexity"]
-
-            bar = severity_bar(
-                score,
-                scale,
-                width=15
-            )
+        for finding in items[:cap]:
 
             lines.append(
-                f"| {safe(function['name'], 80)} "
-                f"({safe(function['file'], 120)}:"
-                f"{function['line']}) | "
-                f"`{bar}` | **{score}** |"
+                f"| {finding.severity.value.upper()} | "
+                f"{safe(issue_title(finding))} | "
+                f"{location(analysis, finding)} |"
             )
 
-        lines += [
-            "",
-            "Higher cyclomatic complexity indicates "
-            "more independent execution paths.",
-            ""
-        ]
+        if len(items) > cap:
 
-    else:
+            lines += [
+                "",
+                f"Showing {cap} of {len(items)} "
+                f"findings in this category."
+            ]
 
-        lines += [
-            "No function complexity metrics available.",
-            ""
-        ]
+        lines.append("")
 
-    # Duplication overview
+    # Never report clean results when analysis is incomplete
+    if not findings:
+
+        if report.errors or report.skipped_files:
+
+            lines += [
+                "**Analysis coverage is incomplete.**",
+                "",
+                "No findings were reported, but some "
+                "analysis could not be completed.",
+                ""
+            ]
+
+        elif analysis.analyzed_files == 0:
+
+            lines += [
+                "No eligible files were analyzed.",
+                ""
+            ]
+
+        else:
+
+            lines += [
+                "No issues detected within the analyzed scope.",
+                ""
+            ]
+
     lines += [
-        "---",
+        (
+            "**Potential token duplication:** "
+            f"{report.duplication.duplication_percentage}%"
+        ),
+
         "",
-        "## Code Duplication",
-        "",
-        f"**Detected token duplication: {duplication:.2f}%**",
-        "",
-        f"`{severity_bar(duplication, 100, 25)}`",
-        "",
-        f"Duplicate blocks: {len(report.duplication.blocks)}",
+
+        (
+            f"Analysis errors: {len(report.errors)} · "
+            f"Skipped files: {len(report.skipped_files)}"
+        ),
+
         ""
     ]
 
     # Analysis errors
-    if report.errors:
+    for error in report.errors[:10]:
 
-        lines += [
-            "## ⚠️ Analysis Errors",
-            ""
-        ]
-
-        for error in report.errors[:10]:
-
-            lines.append(
-                f"- **{safe(error.file_path)}** — "
-                f"{safe(error.stage)}: "
-                f"{safe(error.message)}"
-            )
-
-        lines.append("")
+        lines.append(
+            f"- Analysis error: {safe(error.file_path)} — "
+            f"{safe(error.stage)} — "
+            f"{safe(error.message)}"
+        )
 
     # Skipped files
-    if report.skipped_files:
+    for path, reason in list(
+        report.skipped_files.items()
+    )[:10]:
 
-        lines += [
-            "## Skipped Files",
-            ""
-        ]
-
-        for path, reason in list(
-            report.skipped_files.items()
-        )[:10]:
-
-            lines.append(
-                f"- {safe(path)} — {safe(reason)}"
-            )
-
-        lines.append("")
+        lines.append(
+            f"- Skipped: {safe(path)} — {safe(reason)}"
+        )
 
     lines += [
-        "---",
         "",
-        "**Analysis Scope:** Python, C++ and SQL.",
-        "",
-        "Powered by rule-based static analysis, "
-        "AST parsing and algorithmic code inspection.",
-        "",
-        "Findings represent potential issues "
-        "and should be reviewed before merging."
+        "Findings are potential issues, not proof of "
+        "exploitability. See inline annotations "
+        "for explanations and fixes."
     ]
 
     return "\n".join(lines)

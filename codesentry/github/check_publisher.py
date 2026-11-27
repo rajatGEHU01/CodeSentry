@@ -1,11 +1,8 @@
+from codesentry.github.report_format import issue_title, render_summary, safe
 import logging
+
 from datetime import datetime, timezone
 
-from codesentry.github.report_format import (
-    issue_title,
-    render_summary,
-    safe
-)
 from codesentry.github.client import GitHubClient
 from codesentry.github.events import PullRequestEvent
 from codesentry.github.pr_analyzer import PullRequestAnalysis
@@ -86,15 +83,8 @@ class CheckPublisher:
                 "title": "CodeSentry analysis in progress",
 
                 "summary": (
-                    "## CodeSentry Static Analysis\n\n"
-                    "Analyzing the pull request for:\n\n"
-                    "- Security vulnerabilities\n"
-                    "- Unsafe programming practices\n"
-                    "- Code duplication\n"
-                    "- Function complexity\n"
-                    "- SQL quality and safety\n\n"
-                    "The quality gate report will appear "
-                    "when analysis is complete."
+                    "Analyzing code quality, security, "
+                    "complexity and duplication."
                 )
             }
         }
@@ -124,6 +114,7 @@ class CheckPublisher:
 
         findings = sorted(
             analysis.findings,
+
             key=lambda finding: (
                 self.SEVERITY_ORDER.get(
                     finding.severity.value,
@@ -175,23 +166,14 @@ class CheckPublisher:
 
             severity = finding.severity.value
 
-            recommendation = (
-                finding.suggestion
-                or "Review the affected code."
-            )
+            message = finding.message + f"\n\nRule: {finding.rule_id}"
 
-            message = (
-                "CodeSentry Static Analysis\n\n"
-                f"Issue: {issue_title(finding)}\n"
-                f"Severity: {severity.upper()}\n"
-                f"Rule: {finding.rule_id}\n"
-                f"Location: "
-                f"{finding.file_path}:{target_line}\n\n"
-                "PROBLEM\n"
-                f"{finding.message}\n\n"
-                "HOW TO FIX\n"
-                f"Recommended fix: {recommendation}"
-            )
+            if finding.suggestion:
+
+                message += (
+                    "\n\nRecommended fix: "
+                    + finding.suggestion
+                )
 
             annotations.append({
                 "path": finding.file_path,
@@ -207,8 +189,7 @@ class CheckPublisher:
                     ),
 
                 "title": (
-                    f"{severity.upper()} — "
-                    f"{issue_title(finding)}"
+                    f"{severity.upper()} — {issue_title(finding)}"
                 )[:255],
 
                 "message": message[:60000]
@@ -216,11 +197,7 @@ class CheckPublisher:
 
         return annotations
 
-    def build_summary(
-        self,
-        analysis: PullRequestAnalysis
-    ) -> str:
-
+    def build_summary(self, analysis: PullRequestAnalysis) -> str:
         return render_summary(analysis)
 
     def complete_check(
@@ -237,29 +214,10 @@ class CheckPublisher:
             "failure"
         )
 
-        total = len(analysis.findings)
-
-        counts = analysis.report.severity_counts
-
-        critical = counts.get("critical", 0)
-        high = counts.get("high", 0)
-
         titles = {
-            "passed": (
-                f"Quality gate passed | "
-                f"{total} findings"
-            ),
-
-            "failed": (
-                f"Quality gate failed | "
-                f"{critical} critical, "
-                f"{high} high | "
-                f"{total} total findings"
-            ),
-
-            "error": (
-                "Analysis incomplete or failed"
-            )
+            "passed": "Quality gate passed",
+            "failed": "Quality gate failed",
+            "error": "Analysis incomplete or failed"
         }
 
         annotations = self.build_annotations(
@@ -271,19 +229,15 @@ class CheckPublisher:
         if len(analysis.findings) > len(annotations):
 
             summary += (
-                "\n\n"
-                f"**Inline annotations:** "
-                f"{len(annotations)} of {total} findings."
-                "\n\n"
-                "Only eligible changed lines are "
-                "annotated, subject to GitHub API limits."
+                "\n\nOnly a limited number of findings "
+                "are displayed as annotations."
             )
 
         output = {
             "title": titles.get(
                 status,
                 "Analysis failed"
-            )[:255],
+            ),
 
             "summary": summary[:60000]
         }
@@ -313,8 +267,11 @@ class CheckPublisher:
         logger.info(
             "Check completed | ID: %s | "
             "Conclusion: %s | Annotations: %s",
+
             check_id,
+
             conclusion,
+
             len(annotations)
         )
 
@@ -339,20 +296,18 @@ class CheckPublisher:
                 "title": "CodeSentry analysis failed",
 
                 "summary": (
-                    "## Analysis Incomplete\n\n"
                     "The analysis could not be completed.\n\n"
-                    f"**Error type:** {safe(error_type)}\n\n"
+                    f"Error type: {error_type}\n\n"
                     "Check the application logs and retry."
-                    "\n\n"
-                    "An incomplete analysis does not "
-                    "indicate that the code is safe."
                 )
             }
         }
 
         return github.request(
             "PATCH",
+
             f"{self.endpoint(event)}/{check_id}",
+
             json=payload
         )
 
@@ -374,17 +329,16 @@ class CheckPublisher:
                 "title": "Analysis cancelled",
 
                 "summary": (
-                    "## Analysis Cancelled\n\n"
                     "The pull request changed or became "
-                    "inactive during analysis.\n\n"
-                    "Outdated analysis results have "
-                    "not been published."
+                    "inactive during analysis."
                 )
             }
         }
 
         return github.request(
             "PATCH",
+
             f"{self.endpoint(event)}/{check_id}",
+
             json=payload
         )
