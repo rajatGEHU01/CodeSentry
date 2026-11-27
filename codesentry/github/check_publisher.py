@@ -1,7 +1,12 @@
-from codesentry.github.report_format import issue_title, render_summary, safe
 import logging
 
 from datetime import datetime, timezone
+
+from codesentry.github.report_format import (
+    issue_title,
+    render_summary,
+    risk_status
+)
 
 from codesentry.github.client import GitHubClient
 from codesentry.github.events import PullRequestEvent
@@ -80,7 +85,7 @@ class CheckPublisher:
             "external_id": self.external_id(event),
 
             "output": {
-                "title": "CodeSentry analysis in progress",
+                "title": "Code Risk Assessment in progress",
 
                 "summary": (
                     "Analyzing code quality, security, "
@@ -114,7 +119,6 @@ class CheckPublisher:
 
         findings = sorted(
             analysis.findings,
-
             key=lambda finding: (
                 self.SEVERITY_ORDER.get(
                     finding.severity.value,
@@ -166,7 +170,10 @@ class CheckPublisher:
 
             severity = finding.severity.value
 
-            message = finding.message + f"\n\nRule: {finding.rule_id}"
+            message = (
+                finding.message
+                + f"\n\nRule: {finding.rule_id}"
+            )
 
             if finding.suggestion:
 
@@ -189,7 +196,8 @@ class CheckPublisher:
                     ),
 
                 "title": (
-                    f"{severity.upper()} — {issue_title(finding)}"
+                    f"{severity.upper()} — "
+                    f"{issue_title(finding)}"
                 )[:255],
 
                 "message": message[:60000]
@@ -197,7 +205,11 @@ class CheckPublisher:
 
         return annotations
 
-    def build_summary(self, analysis: PullRequestAnalysis) -> str:
+    def build_summary(
+        self,
+        analysis: PullRequestAnalysis
+    ) -> str:
+
         return render_summary(analysis)
 
     def complete_check(
@@ -214,12 +226,6 @@ class CheckPublisher:
             "failure"
         )
 
-        titles = {
-            "passed": "Quality gate passed",
-            "failed": "Quality gate failed",
-            "error": "Analysis incomplete or failed"
-        }
-
         annotations = self.build_annotations(
             analysis
         )
@@ -234,10 +240,7 @@ class CheckPublisher:
             )
 
         output = {
-            "title": titles.get(
-                status,
-                "Analysis failed"
-            ),
+            "title": risk_status(status),
 
             "summary": summary[:60000]
         }
@@ -293,10 +296,11 @@ class CheckPublisher:
             "completed_at": self.timestamp(),
 
             "output": {
-                "title": "CodeSentry analysis failed",
+                "title": "Analysis Incomplete",
 
                 "summary": (
-                    "The analysis could not be completed.\n\n"
+                    "The risk assessment could not "
+                    "be completed.\n\n"
                     f"Error type: {error_type}\n\n"
                     "Check the application logs and retry."
                 )

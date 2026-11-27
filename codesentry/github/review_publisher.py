@@ -1,7 +1,12 @@
-from codesentry.github.report_format import issue_title, render_summary, safe
 import hashlib
 import json
 import logging
+
+from codesentry.github.report_format import (
+    issue_title,
+    render_summary,
+    safe
+)
 
 from codesentry.github.client import GitHubClient
 from codesentry.github.pr_analyzer import PullRequestAnalysis
@@ -94,13 +99,41 @@ class ReviewPublisher:
         )
 
     def build_comment(self, finding) -> str:
+
         severity = finding.severity.value
-        icon = self.SEVERITY_ICONS.get(severity, "⚪")
-        body = [f"{icon} **{safe(issue_title(finding))}** — {severity.upper()}",
-                "", "**Problem**", safe(finding.message, 1500)]
+
+        icon = self.SEVERITY_ICONS.get(
+            severity,
+            "⚪"
+        )
+
+        body = [
+            f"{icon} **{safe(issue_title(finding))}**"
+            f" — {severity.upper()}",
+
+            "",
+
+            "**Problem**",
+
+            safe(finding.message, 1500)
+        ]
+
         if finding.suggestion:
-            body += ["", "**How to fix**", safe(finding.suggestion, 1500)]
-        body += ["", f"Rule: `{safe(finding.rule_id)}` · CodeSentry"]
+
+            body.extend([
+                "",
+
+                "**How to fix**",
+
+                safe(finding.suggestion, 1500)
+            ])
+
+        body.extend([
+            "",
+
+            f"Rule: `{safe(finding.rule_id)}` · CodeSentry"
+        ])
+
         return "\n".join(body)
 
     def build_comments(
@@ -171,9 +204,21 @@ class ReviewPublisher:
 
         return comments
 
-    def build_summary(self, analysis: PullRequestAnalysis, comment_count: int) -> str:
-        return (render_summary(analysis) + f"\n\nInline comments: {comment_count}"
-                + "\n\n" + self.generate_marker(analysis))
+    def build_summary(
+        self,
+        analysis: PullRequestAnalysis,
+        comment_count: int
+    ) -> str:
+
+        return (
+            render_summary(analysis)
+
+            + f"\n\nInline comments: {comment_count}"
+
+            + "\n\n"
+
+            + self.generate_marker(analysis)
+        )
 
     def already_published(
         self,
@@ -269,7 +314,9 @@ class ReviewPublisher:
 
         logger.info(
             "GitHub review published | ID: %s | Comments: %s",
+
             response.get("id"),
+
             len(comments)
         )
 
